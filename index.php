@@ -505,12 +505,31 @@ if ($action === 'webhook') {
         }
     }
     
+    // Capture request body - handle different content types
+    $rawBody = file_get_contents('php://input');
+    $postData = $_POST;
+    $filesData = $_FILES;
+    
+    // If raw body is empty but POST/FILES have data, it's likely multipart/form-data
+    if (empty($rawBody) && (!empty($postData) || !empty($filesData))) {
+        $bodyData = [];
+        if (!empty($postData)) {
+            $bodyData['post'] = $postData;
+        }
+        if (!empty($filesData)) {
+            $bodyData['files'] = $filesData;
+        }
+        $body = json_encode($bodyData, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
+    } else {
+        $body = $rawBody;
+    }
+    
     $webhook_data = [
         'timestamp' => date('Y-m-d H:i:s'),
         'method' => $_SERVER['REQUEST_METHOD'],
         'headers' => getallheaders(),
         'query' => $_GET,
-        'body' => file_get_contents('php://input'),
+        'body' => $body,
         'ip' => $_SERVER['REMOTE_ADDR'] ?? 'unknown',
         'project' => $webhookProject,
         'read' => false,
@@ -615,6 +634,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['send_request'])) {
     // Parse form data
     $formDataRows = [];
     if (isset($_POST['formdata_key'])) {
+        // Build a set of enabled checkbox indexes
+        $enabledIndexes = [];
+        if (isset($_POST['formdata_enabled'])) {
+            $enabledIndexes = array_flip(array_keys($_POST['formdata_enabled']));
+        }
+        
         foreach ($_POST['formdata_key'] as $idx => $key) {
             $key = trim($key);
             if (!empty($key)) {
@@ -645,7 +670,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['send_request'])) {
                     'key' => $key,
                     'value' => $value,
                     'type' => $type,
-                    'enabled' => isset($_POST['formdata_enabled'][$idx]),
+                    'enabled' => isset($enabledIndexes[$idx]),
                     'fileContent' => $fileContent,
                     'fileName' => $fileName
                 ];
@@ -1656,7 +1681,7 @@ $webhook_history = loadHistory('webhook');
                                                 </select>
                                             </div>
                                             <div class="col-span-1 flex items-center justify-center gap-2">
-                                                <input type="checkbox" name="formdata_enabled[<?php echo $idx; ?>]" <?php echo ($item['enabled'] ?? true) ? 'checked' : ''; ?> class="w-4 h-4 accent-orange-500 formdata-checkbox" onchange="updateBodyCount()">
+                                                <input type="checkbox" name="formdata_enabled[]" <?php echo ($item['enabled'] ?? true) ? 'checked' : ''; ?> class="w-4 h-4 accent-orange-500 formdata-checkbox" onchange="updateBodyCount()">
                                                 <button type="button" onclick="this.closest('.data-row').remove(); updateBodyCount();" class="hover:text-red-600 text-lg leading-none" style="color: var(--text-tertiary);">×</button>
                                             </div>
                                         </div>
@@ -2741,7 +2766,6 @@ $webhook_history = loadHistory('webhook');
             const container = document.getElementById('formdata-container');
             const newRow = document.createElement('div');
             newRow.className = 'data-row mb-2 p-3';
-            const idx = Date.now();
             newRow.innerHTML = `
                 <div class="grid grid-cols-12 gap-3 items-center">
                     <div class="col-span-5">
@@ -2757,7 +2781,7 @@ $webhook_history = loadHistory('webhook');
                         </select>
                     </div>
                     <div class="col-span-1 flex items-center justify-center gap-2">
-                        <input type="checkbox" name="formdata_enabled[${idx}]" checked class="w-4 h-4 accent-orange-500 formdata-checkbox" onchange="updateBodyCount()">
+                        <input type="checkbox" name="formdata_enabled[]" checked class="w-4 h-4 accent-orange-500 formdata-checkbox" onchange="updateBodyCount()">
                         <button type="button" onclick="this.closest('.data-row').remove(); updateBodyCount();" class="hover:text-red-600 text-lg leading-none" style="color: var(--text-tertiary);">×</button>
                     </div>
                 </div>
