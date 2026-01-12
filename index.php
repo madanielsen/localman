@@ -765,7 +765,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['send_request'])) {
             curl_setopt($ch, CURLOPT_ENCODING, ''); // Enable automatic decompression
             
             // Set method
-            curl_setopt($ch, CURLOPT_CUSTOMREQUEST, $method);
+            if ($method === 'POST') {
+                curl_setopt($ch, CURLOPT_POST, true);
+            } elseif ($method === 'HEAD') {
+                curl_setopt($ch, CURLOPT_NOBODY, true);
+            } elseif ($method === 'GET') {
+                // GET is default, but explicitly setting it can help with redirects
+                curl_setopt($ch, CURLOPT_HTTPGET, true);
+            } else {
+                // For PUT, PATCH, DELETE, etc.
+                curl_setopt($ch, CURLOPT_CUSTOMREQUEST, $method);
+                // When using CUSTOMREQUEST, we need to ensure POST is enabled for body data
+                if (in_array($method, ['PUT', 'PATCH'])) {
+                    curl_setopt($ch, CURLOPT_POST, true);
+                }
+            }
             
             // Set headers
             if (!empty($header_array)) {
@@ -835,7 +849,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['send_request'])) {
                 'duration' => $duration,
                 'headers' => $response_headers,
                 'body' => $response_body,
-                'timestamp' => date('Y-m-d H:i:s')
+                'timestamp' => date('Y-m-d H:i:s'),
+                'request' => [
+                    'headers' => $header_array,
+                    'body' => ($bodyType === 'form-data' || $bodyType === 'x-www-form-urlencoded') 
+                        ? json_encode($postData ?? [], JSON_PRETTY_PRINT) 
+                        : ($bodyType === 'raw' ? $body : '')
+                ]
             ];
             
             saveEntry('request', [
@@ -1750,6 +1770,7 @@ $webhook_history = loadHistory('webhook');
                             <div class="response-tab" onclick="switchResponseTab('resp-headers')">Headers</div>
                             <div class="response-tab" onclick="switchResponseTab('resp-cookies')">Cookies</div>
                             <div class="response-tab" onclick="switchResponseTab('resp-test')">Test Results</div>
+                            <div class="response-tab" onclick="switchResponseTab('resp-request')">Request</div>
                         </div>
                     </div>
                     
@@ -1802,6 +1823,43 @@ $webhook_history = loadHistory('webhook');
                         
                         <div id="resp-test" class="p-6 hidden">
                             <div class="text-sm" style="color: var(--text-secondary);">No test results</div>
+                        </div>
+                        
+                        <div id="resp-request" class="p-6 hidden">
+                            <div class="mb-6">
+                                <div class="text-sm font-semibold mb-2" style="color: var(--text-primary);">Request Details</div>
+                                <div class="text-xs mb-3" style="color: var(--text-secondary);">URL</div>
+                                <div class="border rounded p-3 mb-4" style="background: var(--bg-tertiary); border-color: var(--border-primary);">
+                                    <code class="text-xs font-mono" style="color: var(--text-primary);"><?php echo htmlspecialchars($response_data['url']); ?></code>
+                                </div>
+                                
+                                <div class="text-xs mb-3" style="color: var(--text-secondary);">Method</div>
+                                <div class="border rounded p-3 mb-4" style="background: var(--bg-tertiary); border-color: var(--border-primary);">
+                                    <code class="text-xs font-mono font-semibold" style="color: var(--text-primary);"><?php echo htmlspecialchars($response_data['method']); ?></code>
+                                </div>
+                            </div>
+                            
+                            <?php if (!empty($response_data['request']['headers'])): ?>
+                            <div class="mb-6">
+                                <div class="text-sm font-semibold mb-3" style="color: var(--text-primary);">Request Headers</div>
+                                <div class="border rounded overflow-auto" style="background: var(--bg-tertiary); border-color: var(--border-primary); max-height: 300px;">
+                                    <pre class="p-4 font-mono text-xs leading-relaxed" style="color: var(--text-primary);"><?php 
+                                        foreach ($response_data['request']['headers'] as $header) {
+                                            echo htmlspecialchars($header) . "\n";
+                                        }
+                                    ?></pre>
+                                </div>
+                            </div>
+                            <?php endif; ?>
+                            
+                            <?php if (!empty($response_data['request']['body'])): ?>
+                            <div class="mb-6">
+                                <div class="text-sm font-semibold mb-3" style="color: var(--text-primary);">Request Body</div>
+                                <div class="border rounded overflow-auto" style="background: var(--bg-tertiary); border-color: var(--border-primary); max-height: 400px;">
+                                    <pre class="p-4 font-mono text-xs leading-relaxed" style="color: var(--text-primary);"><?php echo htmlspecialchars($response_data['request']['body']); ?></pre>
+                                </div>
+                            </div>
+                            <?php endif; ?>
                         </div>
                     </div>
                 </div>
@@ -2423,6 +2481,7 @@ $webhook_history = loadHistory('webhook');
             document.getElementById('resp-headers')?.classList.add('hidden');
             document.getElementById('resp-cookies')?.classList.add('hidden');
             document.getElementById('resp-test')?.classList.add('hidden');
+            document.getElementById('resp-request')?.classList.add('hidden');
             
             // Show selected tab
             const selectedTab = document.getElementById(tabId);
