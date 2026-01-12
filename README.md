@@ -2,9 +2,6 @@
 
 A Postman-like standalone PHP application that runs as a single file. Send API requests, capture webhooks, and manage multiple projects - all in one simple, beautiful interface optimized for local development!
 
-![LocalMan API Request Interface](docs/images/api_request.png)
-![LocalMan Webhooks Interface](docs/images/webhooks.png)
-
 ## ✨ Features
 
 ### 📤 API Request Testing
