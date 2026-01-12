@@ -11,6 +11,7 @@
 define('STORAGE_DIR', __DIR__ . '/storage');
 define('WEBHOOKS_DIR', STORAGE_DIR . '/webhooks');
 define('REQUESTS_DIR', STORAGE_DIR . '/requests');
+define('REQUEST_TIMEOUT', 30);
 
 // Create storage directories if they don't exist
 if (!file_exists(WEBHOOKS_DIR)) {
@@ -151,7 +152,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['send_request'])) {
             curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
             curl_setopt($ch, CURLOPT_HEADER, true);
             curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
-            curl_setopt($ch, CURLOPT_TIMEOUT, 30);
+            curl_setopt($ch, CURLOPT_TIMEOUT, REQUEST_TIMEOUT);
             
             // Set method
             curl_setopt($ch, CURLOPT_CUSTOMREQUEST, $method);
@@ -161,8 +162,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['send_request'])) {
                 curl_setopt($ch, CURLOPT_HTTPHEADER, $header_array);
             }
             
-            // Set body for POST, PUT, PATCH
-            if (in_array($method, ['POST', 'PUT', 'PATCH', 'DELETE']) && !empty($body)) {
+            // Set body for POST, PUT, PATCH (DELETE typically shouldn't have a body)
+            if (in_array($method, ['POST', 'PUT', 'PATCH']) && !empty($body)) {
                 curl_setopt($ch, CURLOPT_POSTFIELDS, $body);
             }
             
@@ -209,7 +210,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['send_request'])) {
 
 // Get webhook URL
 $webhook_url = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on' ? "https" : "http") 
-    . "://" . $_SERVER['HTTP_HOST'] . dirname($_SERVER['SCRIPT_NAME']) . "/index.php?action=webhook";
+    . "://" . $_SERVER['HTTP_HOST'] . rtrim(dirname($_SERVER['SCRIPT_NAME']), '/.') . "/index.php?action=webhook";
 
 // Load history for display
 $request_history = loadHistory('request');
@@ -386,14 +387,12 @@ $webhook_history = loadHistory('webhook');
                                     </div>
                                 <?php endif; ?>
                                 
-                                <?php if (!empty($webhook['query']) && count($webhook['query']) > 1): // More than just 'action' ?>
+                                <?php if (!empty($webhook['query']) && count(array_diff_key($webhook['query'], ['action' => null])) > 0): ?>
                                     <div class="mb-3">
                                         <strong class="text-gray-700 text-sm">Query Parameters:</strong>
                                         <div class="bg-white border border-gray-200 rounded p-3 mt-1">
                                             <pre class="font-mono text-xs text-gray-700"><?php 
-                                                $query_filtered = array_filter($webhook['query'], function($key) {
-                                                    return $key !== 'action';
-                                                }, ARRAY_FILTER_USE_KEY);
+                                                $query_filtered = array_diff_key($webhook['query'], ['action' => null]);
                                                 echo htmlspecialchars(json_encode($query_filtered, JSON_PRETTY_PRINT)); 
                                             ?></pre>
                                         </div>
