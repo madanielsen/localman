@@ -64,7 +64,8 @@ function loadSettings() {
                     'bodyType' => 'none',
                     'formData' => [],
                     'showDefaultHeaders' => false
-                ]
+                ],
+                'starredRequests' => []
             ]
         ]
     ];
@@ -385,12 +386,92 @@ if (isset($_POST['create_project'])) {
                 'headers' => [],
                 'body' => '',
                 'showDefaultHeaders' => false
-            ]
+            ],
+            'starredRequests' => []
         ];
         $settings['currentProject'] = $projectName;
         saveSettings($settings);
         $currentProject = $settings['projects'][$projectName];
     }
+}
+
+// Handle star request
+if (isset($_POST['star_request'])) {
+    $requestName = trim($_POST['request_name'] ?? '');
+    if (!empty($requestName)) {
+        if (!isset($settings['projects'][$settings['currentProject']]['starredRequests'])) {
+            $settings['projects'][$settings['currentProject']]['starredRequests'] = [];
+        }
+        
+        $starredRequest = [
+            'id' => uniqid(),
+            'name' => $requestName,
+            'url' => $_POST['star_url'] ?? '',
+            'method' => $_POST['star_method'] ?? 'GET',
+            'params' => json_decode($_POST['star_params'] ?? '[]', true) ?: [],
+            'authorization' => json_decode($_POST['star_authorization'] ?? '{}', true) ?: ['type' => 'none'],
+            'headers' => json_decode($_POST['star_headers'] ?? '[]', true) ?: [],
+            'body' => $_POST['star_body'] ?? '',
+            'bodyType' => $_POST['star_bodyType'] ?? 'none',
+            'formData' => json_decode($_POST['star_formData'] ?? '[]', true) ?: [],
+            'createdAt' => date('Y-m-d H:i:s')
+        ];
+        
+        $settings['projects'][$settings['currentProject']]['starredRequests'][] = $starredRequest;
+        saveSettings($settings);
+        $currentProject = getCurrentProject($settings);
+    }
+    header('Content-Type: application/json');
+    echo json_encode(['success' => true]);
+    exit;
+}
+
+// Handle load starred request
+if (isset($_POST['load_starred_request'])) {
+    $requestId = $_POST['request_id'] ?? '';
+    $starredRequests = $settings['projects'][$settings['currentProject']]['starredRequests'] ?? [];
+    
+    foreach ($starredRequests as $request) {
+        if ($request['id'] === $requestId) {
+            $settings['projects'][$settings['currentProject']]['lastRequest'] = [
+                'url' => $request['url'],
+                'method' => $request['method'],
+                'params' => $request['params'],
+                'authorization' => $request['authorization'],
+                'headers' => $request['headers'],
+                'body' => $request['body'],
+                'bodyType' => $request['bodyType'],
+                'formData' => $request['formData'],
+                'showDefaultHeaders' => false
+            ];
+            saveSettings($settings);
+            break;
+        }
+    }
+    // Redirect with request_id parameter to track active request
+    header('Location: ?action=home&request_id=' . urlencode($requestId));
+    exit;
+}
+
+// Handle delete starred request
+if (isset($_POST['delete_starred_request'])) {
+    $requestId = $_POST['request_id'] ?? '';
+    if (!isset($settings['projects'][$settings['currentProject']]['starredRequests'])) {
+        $settings['projects'][$settings['currentProject']]['starredRequests'] = [];
+    }
+    
+    $starredRequests = $settings['projects'][$settings['currentProject']]['starredRequests'];
+    $settings['projects'][$settings['currentProject']]['starredRequests'] = array_values(
+        array_filter($starredRequests, function($req) use ($requestId) {
+            return $req['id'] !== $requestId;
+        })
+    );
+    
+    saveSettings($settings);
+    $currentProject = getCurrentProject($settings);
+    header('Content-Type: application/json');
+    echo json_encode(['success' => true]);
+    exit;
 }
 
 // Handle reset webhook settings
@@ -689,6 +770,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['send_request'])) {
         'formData' => $formDataRows,
         'showDefaultHeaders' => isset($_POST['show_default_headers'])
     ];
+    
+    // Update active starred request if request_id parameter is present
+    $activeRequestId = $_GET['request_id'] ?? null;
+    if ($activeRequestId) {
+        $starredRequests = $settings['projects'][$settings['currentProject']]['starredRequests'] ?? [];
+        foreach ($starredRequests as $idx => $starred) {
+            if ($starred['id'] === $activeRequestId) {
+                // Update the starred request with new values
+                $settings['projects'][$settings['currentProject']]['starredRequests'][$idx]['url'] = $url;
+                $settings['projects'][$settings['currentProject']]['starredRequests'][$idx]['method'] = $method;
+                $settings['projects'][$settings['currentProject']]['starredRequests'][$idx]['params'] = $paramRows;
+                $settings['projects'][$settings['currentProject']]['starredRequests'][$idx]['authorization'] = $authorization;
+                $settings['projects'][$settings['currentProject']]['starredRequests'][$idx]['headers'] = $headerRows;
+                $settings['projects'][$settings['currentProject']]['starredRequests'][$idx]['body'] = $body;
+                $settings['projects'][$settings['currentProject']]['starredRequests'][$idx]['bodyType'] = $bodyType;
+                $settings['projects'][$settings['currentProject']]['starredRequests'][$idx]['formData'] = $formDataRows;
+                break;
+            }
+        }
+    }
+    
     saveSettings($settings);
     
     // Reload current project to get updated settings for UI display
@@ -1226,6 +1328,35 @@ $webhook_history = loadHistory('webhook');
                         </svg>
                         <span>API Request</span>
                     </a>
+                    <?php 
+                    $starredRequests = $currentProject['starredRequests'] ?? [];
+                    $activeRequestId = $_GET['request_id'] ?? null;
+                    if (!empty($starredRequests)): 
+                    ?>
+                    <div class="ml-4 mt-1 space-y-1">
+                        <?php foreach ($starredRequests as $starred): 
+                            $isActive = ($starred['id'] === $activeRequestId);
+                        ?>
+                        <div class="flex items-center gap-1 group">
+                            <form method="POST" class="flex-1">
+                                <input type="hidden" name="request_id" value="<?php echo htmlspecialchars($starred['id']); ?>">
+                                <button type="submit" name="load_starred_request" class="w-full text-left px-3 py-2 rounded text-xs transition flex items-center gap-2 <?php echo $isActive ? 'active-request' : ''; ?>" style="color: var(--text-secondary); <?php echo $isActive ? 'background: var(--bg-tertiary); border-left: 2px solid #ff6c37;' : ''; ?>" onmouseover="if (!this.classList.contains('active-request')) this.style.background='var(--bg-tertiary)'" onmouseout="if (!this.classList.contains('active-request')) this.style.background='transparent'">
+                                    <svg class="w-3 h-3 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20" style="<?php echo $isActive ? 'color: #ff6c37;' : ''; ?>">
+                                        <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z"></path>
+                                    </svg>
+                                    <span class="truncate flex-1"><?php echo htmlspecialchars($starred['name']); ?></span>
+                                    <span class="text-xs px-1.5 py-0.5 rounded font-medium flex-shrink-0" style="background: var(--bg-tertiary); color: var(--text-tertiary);"><?php echo htmlspecialchars($starred['method']); ?></span>
+                                </button>
+                            </form>
+                            <button onclick="deleteStarredRequest('<?php echo htmlspecialchars($starred['id']); ?>')" class="p-1.5 rounded transition flex-shrink-0" style="color: var(--text-tertiary);" onmouseover="this.style.background='#fee2e2'; this.style.color='#dc2626';" onmouseout="this.style.background='transparent'; this.style.color='var(--text-tertiary)';" title="Delete">
+                                <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                                </svg>
+                            </button>
+                        </div>
+                        <?php endforeach; ?>
+                    </div>
+                    <?php endif; ?>
                     <a href="?action=webhooks" class="tab-button flex items-center gap-3 px-4 py-3 rounded font-medium text-sm transition mt-1 <?php echo $action === 'webhooks' ? 'active' : ''; ?>" style="<?php echo $action === 'webhooks' ? 'background: var(--bg-tertiary);' : ''; ?>" onmouseover="if (!this.classList.contains('active')) this.style.background='var(--bg-tertiary)'" onmouseout="if (!this.classList.contains('active')) this.style.background='transparent'">
                         <svg class="icon" viewBox="0 0 24 24">
                             <path d="M22 12h-4l-3 9L9 3l-3 9H2"></path>
@@ -1280,6 +1411,11 @@ $webhook_history = loadHistory('webhook');
                             <input type="url" id="url-input" name="url" placeholder="Enter URL or paste text" 
                                    value="<?php echo htmlspecialchars($currentProject['lastRequest']['url']); ?>" 
                                    class="flex-1 px-4 py-2 border rounded focus:outline-none font-mono text-sm" oninput="updateFullUrl()" required>
+                            <button type="button" onclick="openStarModal()" class="px-4 py-2 rounded transition text-sm border" style="background: var(--bg-secondary); color: var(--text-primary); border-color: var(--border-primary);" title="Save request">
+                                <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.176 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.38-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z" />
+                                </svg>
+                            </button>
                             <button type="submit" name="send_request" class="postman-orange text-white font-semibold px-8 py-2 rounded transition text-sm">
                                 Send
                             </button>
@@ -2319,6 +2455,41 @@ $webhook_history = loadHistory('webhook');
     </div>
     </div>
     
+    <!-- Star Request Modal -->
+    <div id="starModal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+        <div class="rounded-lg shadow-xl" style="width: 450px; background: var(--bg-primary);">
+            <div class="border-b px-6 py-4 flex justify-between items-center" style="border-color: var(--border-primary);">
+                <h3 class="text-lg font-semibold" style="color: var(--text-primary);">Save Request</h3>
+                <button onclick="document.getElementById('starModal').classList.add('hidden')" class="text-2xl" style="color: var(--text-secondary);">×</button>
+            </div>
+            
+            <form id="starRequestForm" class="p-6">
+                <div class="mb-4">
+                    <label class="block text-sm font-medium mb-2" style="color: var(--text-primary);">Request Name</label>
+                    <input type="text" id="starRequestName" placeholder="e.g., Get User Profile" required
+                           class="w-full px-4 py-2 border rounded text-sm focus:outline-none focus:border-orange-500" 
+                           style="background: var(--input-bg); border-color: var(--border-primary); color: var(--text-primary);">
+                </div>
+                <div class="text-sm mb-4 p-3 rounded" style="background: var(--bg-tertiary); color: var(--text-secondary);">
+                    <div class="flex items-center gap-2 mb-1">
+                        <span class="font-semibold px-2 py-0.5 rounded" style="background: var(--bg-secondary);" id="starPreviewMethod">GET</span>
+                        <span class="font-mono text-xs truncate" id="starPreviewUrl"></span>
+                    </div>
+                </div>
+                <div class="flex gap-2 justify-end">
+                    <button type="button" onclick="document.getElementById('starModal').classList.add('hidden')" 
+                            class="px-4 py-2 rounded text-sm transition" 
+                            style="background: var(--bg-tertiary); color: var(--text-primary);">
+                        Cancel
+                    </button>
+                    <button type="submit" class="postman-orange text-white font-semibold px-4 py-2 rounded text-sm transition">
+                        Save
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+
     <!-- Project Management Modal -->
     <div id="projectModal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
         <div class="rounded-lg shadow-xl" style="width: 500px; max-height: 80vh; overflow-y: auto; background: var(--bg-primary);">
@@ -2995,6 +3166,150 @@ $webhook_history = loadHistory('webhook');
         
         setInterval(checkForNewWebhooks, 2000);
         <?php endif; ?>
+        
+        // Star Request Functionality
+        function openStarModal() {
+            const urlInput = document.querySelector('input[name="url"]');
+            const methodSelect = document.querySelector('select[name="method"]');
+            
+            const url = urlInput?.value || '';
+            const method = methodSelect?.value || 'GET';
+            
+            if (!url) {
+                alert('Please enter a URL before saving the request.');
+                return;
+            }
+            
+            // Update preview in modal
+            document.getElementById('starPreviewMethod').textContent = method;
+            document.getElementById('starPreviewUrl').textContent = url;
+            
+            // Show modal
+            document.getElementById('starModal').classList.remove('hidden');
+            document.getElementById('starRequestName').focus();
+        }
+        
+        // Handle star request form submission
+        document.getElementById('starRequestForm')?.addEventListener('submit', function(e) {
+            e.preventDefault();
+            
+            const requestName = document.getElementById('starRequestName').value.trim();
+            if (!requestName) {
+                alert('Please enter a name for the request.');
+                return;
+            }
+            
+            // Collect all current request data
+            const formData = new FormData();
+            formData.append('star_request', '1');
+            formData.append('request_name', requestName);
+            formData.append('star_url', document.querySelector('input[name="url"]').value);
+            formData.append('star_method', document.querySelector('select[name="method"]').value);
+            formData.append('star_body', document.querySelector('textarea[name="body"]')?.value || '');
+            formData.append('star_bodyType', document.querySelector('input[name="body_type"]:checked')?.value || 'none');
+            
+            // Collect params
+            const params = [];
+            document.querySelectorAll('#params-container .data-row').forEach(row => {
+                const key = row.querySelector('input[name="param_key[]"]')?.value;
+                const value = row.querySelector('input[name="param_value[]"]')?.value;
+                const description = row.querySelector('input[name="param_description[]"]')?.value;
+                const enabled = row.querySelector('input[type="checkbox"]')?.checked;
+                if (key) {
+                    params.push({ key, value, description, enabled });
+                }
+            });
+            formData.append('star_params', JSON.stringify(params));
+            
+            // Collect headers (skip default headers)
+            const headers = [];
+            document.querySelectorAll('#headers-container .data-row').forEach(row => {
+                // Skip default header rows
+                if (row.classList.contains('default-header-row')) {
+                    return;
+                }
+                
+                const key = row.querySelector('input[name="header_key[]"]')?.value;
+                const value = row.querySelector('input[name="header_value[]"]')?.value;
+                const enabled = row.querySelector('input[type="checkbox"]')?.checked;
+                if (key) {
+                    headers.push({ key, value, enabled, isDefault: false });
+                }
+            });
+            formData.append('star_headers', JSON.stringify(headers));
+            
+            // Collect authorization
+            const authType = document.querySelector('input[name="auth_type"]:checked')?.value || 'none';
+            const authorization = {
+                type: authType,
+                token: document.querySelector('input[name="auth_token"]')?.value || '',
+                username: document.querySelector('input[name="auth_username"]')?.value || '',
+                password: document.querySelector('input[name="auth_password"]')?.value || ''
+            };
+            formData.append('star_authorization', JSON.stringify(authorization));
+            
+            // Collect form data
+            const formDataRows = [];
+            document.querySelectorAll('#formdata-container .data-row').forEach(row => {
+                const key = row.querySelector('input[name="formdata_key[]"]')?.value;
+                const value = row.querySelector('input[name="formdata_value[]"]')?.value;
+                const type = row.querySelector('select[name="formdata_type[]"]')?.value;
+                const enabled = row.querySelector('input[type="checkbox"]')?.checked;
+                if (key) {
+                    formDataRows.push({ key, value, type, enabled });
+                }
+            });
+            formData.append('star_formData', JSON.stringify(formDataRows));
+            
+            // Submit the form
+            fetch('', {
+                method: 'POST',
+                body: formData
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    // Close modal and reload page to show new starred request
+                    document.getElementById('starModal').classList.add('hidden');
+                    document.getElementById('starRequestName').value = '';
+                    window.location.reload();
+                } else {
+                    alert('Failed to save request. Please try again.');
+                }
+            })
+            .catch(error => {
+                console.error('Error saving request:', error);
+                alert('Failed to save request. Please try again.');
+            });
+        });
+        
+        // Delete starred request
+        function deleteStarredRequest(requestId) {
+            if (!confirm('Are you sure you want to delete this saved request?')) {
+                return;
+            }
+            
+            const formData = new FormData();
+            formData.append('delete_starred_request', '1');
+            formData.append('request_id', requestId);
+            
+            fetch('', {
+                method: 'POST',
+                body: formData
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    window.location.reload();
+                } else {
+                    alert('Failed to delete request. Please try again.');
+                }
+            })
+            .catch(error => {
+                console.error('Error deleting request:', error);
+                alert('Failed to delete request. Please try again.');
+            });
+        }
     </script>
 </body>
 </html>
