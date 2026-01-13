@@ -1121,7 +1121,7 @@ if (isset($_POST['poll_webhook_relay'])) {
     ensureDirectory($relayHistoryDir);
 
     foreach ($webhookCalls as $webhookCall) {
-        // Skip if already relayed
+        // Skip if already relayed or captured
         if (($webhookCall['status'] ?? '') === 'relayed') {
             continue;
         }
@@ -1129,12 +1129,11 @@ if (isset($_POST['poll_webhook_relay'])) {
         // If capture_only mode, just save to history without relaying
         $captureOnly = $relay['capture_only'] ?? false;
 
-        // Save relay history
+        // Build base history entry
         $historyEntry = [
             'timestamp' => date('Y-m-d H:i:s'),
             'webhook_call_uuid' => $webhookCall['webhook_call_uuid'] ?? null,
             'relay_to_url' => $captureOnly ? '' : $relay['relay_to_url'],
-            'status' => 'captured',  // Default status for capture-only
             'read' => false,  // Track read status for badge system
             'relay_id' => $relayId,  // Track which relay this belongs to
             'request' => [
@@ -1177,10 +1176,12 @@ if (isset($_POST['poll_webhook_relay'])) {
                 ];
             }
         } else {
-            // Capture-only mode: just mark as captured and continue
+            // Capture-only mode: just count as captured
             $relayedCount++;
+            $historyEntry['status'] = 'captured';
             
             // Mark as relayed on the API side to prevent re-fetching
+            // Note: Using 'relayed' status on API side even for capture-only to avoid re-polling
             markWebhookCallRelayed($relay['webhook_uuid'], $webhookCall['webhook_call_uuid']);
         }
 
