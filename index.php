@@ -7,6 +7,9 @@
  * @license MIT
  */
 
+// -----------------------------------------------------------------------------
+// Bootstrap & Configuration
+// -----------------------------------------------------------------------------
 // Set timezone for consistent timestamps
 date_default_timezone_set('UTC');
 
@@ -17,7 +20,74 @@ define('REQUEST_TIMEOUT', 30);
 
 define('LOCALMAN_VERSION', '1.1.0');
 
-// Helper function to get project-specific directories
+// -----------------------------------------------------------------------------
+// Shared Helpers
+// -----------------------------------------------------------------------------
+/**
+ * Ensure a directory exists.
+ */
+function ensureDirectory($path)
+{
+    if (!file_exists($path)) {
+        return mkdir($path, 0755, true);
+    }
+
+    return true;
+}
+
+/**
+ * Safely read JSON from a file.
+ */
+function readJsonFile($path, $assoc = true)
+{
+    if (!file_exists($path)) {
+        return null;
+    }
+
+    $content = @file_get_contents($path);
+    if ($content === false) {
+        return null;
+    }
+
+    $data = json_decode($content, $assoc);
+    if (json_last_error() !== JSON_ERROR_NONE) {
+        return null;
+    }
+
+    return $data;
+}
+
+/**
+ * Write JSON to a file using file locking.
+ */
+function writeJsonFileWithLock($path, $data, $flags, $encodeErrorMessage, $openErrorMessage)
+{
+    $json = json_encode($data, $flags);
+    if ($json === false) {
+        error_log('LocalMan: ' . $encodeErrorMessage);
+        return false;
+    }
+
+    $fp = @fopen($path, 'c');
+    if ($fp === false) {
+        error_log('LocalMan: ' . $openErrorMessage);
+        return false;
+    }
+
+    if (flock($fp, LOCK_EX)) {
+        ftruncate($fp, 0);
+        fwrite($fp, $json);
+        fflush($fp);
+        flock($fp, LOCK_UN);
+    }
+
+    fclose($fp);
+    return true;
+}
+
+/**
+ * Get project-specific directories.
+ */
 function getProjectDirs($projectKey)
 {
     $projectDir = STORAGE_DIR . '/' . preg_replace('/[^a-zA-Z0-9_-]/', '_', $projectKey);
@@ -29,24 +99,41 @@ function getProjectDirs($projectKey)
     ];
 }
 
-// Create base storage directory if it doesn't exist
-if (!file_exists(STORAGE_DIR)) {
-    mkdir(STORAGE_DIR, 0755, true);
+/**
+ * Save relay history entry to storage.
+ */
+function saveRelayHistoryEntry($relayHistoryDir, $historyEntry)
+{
+    ensureDirectory($relayHistoryDir);
+
+    $timestamp = microtime(true);
+    $filename = $relayHistoryDir . '/' . $timestamp . '_' . uniqid() . '.json';
+
+    $result = writeJsonFileWithLock(
+        $filename,
+        $historyEntry,
+        JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE,
+        'Failed to encode relay history entry to JSON',
+        'Failed to open relay history file'
+    );
+
+    return ['success' => $result, 'filename' => $filename];
 }
 
+// Create base storage directory if it doesn't exist
+ensureDirectory(STORAGE_DIR);
+
+// -----------------------------------------------------------------------------
+// Settings
+// -----------------------------------------------------------------------------
 /**
  * Load settings from file
  */
 function loadSettings()
 {
-    if (file_exists(SETTINGS_FILE)) {
-        $content = @file_get_contents(SETTINGS_FILE);
-        if ($content !== false) {
-            $settings = json_decode($content, true);
-            if (json_last_error() === JSON_ERROR_NONE && $settings) {
-                return $settings;
-            }
-        }
+    $settings = readJsonFile(SETTINGS_FILE, true);
+    if (!empty($settings)) {
+        return $settings;
     }
 
     // Default settings
@@ -89,29 +176,18 @@ function loadSettings()
  */
 function saveSettings($settings)
 {
-    $json = json_encode($settings, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
-    if ($json === false) {
-        error_log('LocalMan: Failed to encode settings to JSON');
-        return false;
-    }
-
-    $fp = @fopen(SETTINGS_FILE, 'c');
-    if ($fp === false) {
-        error_log('LocalMan: Failed to open settings file');
-        return false;
-    }
-
-    if (flock($fp, LOCK_EX)) {
-        ftruncate($fp, 0);
-        fwrite($fp, $json);
-        fflush($fp);
-        flock($fp, LOCK_UN);
-    }
-
-    fclose($fp);
-    return true;
+    return writeJsonFileWithLock(
+        SETTINGS_FILE,
+        $settings,
+        JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES,
+        'Failed to encode settings to JSON',
+        'Failed to open settings file'
+    );
 }
 
+// -----------------------------------------------------------------------------
+// Versioning & Auto Update
+// -----------------------------------------------------------------------------
 /**
  * Check if version check is needed (once every 24 hours)
  */
@@ -238,6 +314,9 @@ function performAutoUpdate()
     ];
 }
 
+// -----------------------------------------------------------------------------
+// Project & Storage
+// -----------------------------------------------------------------------------
 /**
  * Get current project settings
  */
@@ -271,8 +350,8 @@ function loadHistory($type, $projectKey = 'default')
     // Load last 50 entries
     $history = [];
     foreach (array_slice($files, 0, 50) as $file) {
-        $data = json_decode(file_get_contents($file), true);
-        if ($data) {
+        $data = readJsonFile($file, true);
+        if (!empty($data)) {
             // Add filename to data for tracking
             $data['_file'] = basename($file);
             $history[] = $data;
@@ -291,28 +370,18 @@ function saveEntry($type, $data, $projectKey = 'default')
     $dir = $type === 'webhook' ? $dirs['webhooks'] : $dirs['requests'];
 
     // Create project directories if they don't exist
-    if (!file_exists($dir)) {
-        mkdir($dir, 0755, true);
-    }
+    ensureDirectory($dir);
 
     $timestamp = microtime(true);
     $filename = $dir . '/' . $timestamp . '_' . uniqid() . '.json';
 
-    $json = json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
-    if ($json === false) {
-        error_log('LocalMan: Failed to encode entry to JSON');
-        return false;
-    }
-
-    $fp = @fopen($filename, 'w');
-    if ($fp !== false) {
-        if (flock($fp, LOCK_EX)) {
-            fwrite($fp, $json);
-            fflush($fp);
-            flock($fp, LOCK_UN);
-        }
-        fclose($fp);
-    }
+    writeJsonFileWithLock(
+        $filename,
+        $data,
+        JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE,
+        'Failed to encode entry to JSON',
+        'Failed to open entry file'
+    );
 
     // Clean up old files (keep only last 50)
     $files = glob($dir . '/*.json');
@@ -343,6 +412,9 @@ function clearHistory($type, $projectKey = 'default')
     }
 }
 
+// -----------------------------------------------------------------------------
+// Webhook Relay API
+// -----------------------------------------------------------------------------
 /**
  * Create webhook relay via API
  */
@@ -529,22 +601,16 @@ function markWebhooksAsRead($currentProjectKey)
     $files = glob($dirs['webhooks'] . '/*.json');
 
     foreach ($files as $file) {
-        $data = json_decode(file_get_contents($file), true);
-        if ($data && !($data['read'] ?? false)) {
+        $data = readJsonFile($file, true);
+        if (!empty($data) && !($data['read'] ?? false)) {
             $data['read'] = true;
-            $json = json_encode($data, JSON_PRETTY_PRINT);
-
-            // Use file locking to prevent race conditions
-            $fp = @fopen($file, 'c');
-            if ($fp && flock($fp, LOCK_EX)) {
-                ftruncate($fp, 0);
-                fwrite($fp, $json);
-                fflush($fp);
-                flock($fp, LOCK_UN);
-                fclose($fp);
-            } elseif ($fp) {
-                fclose($fp);
-            }
+            writeJsonFileWithLock(
+                $file,
+                $data,
+                JSON_PRETTY_PRINT,
+                'Failed to encode webhook read state to JSON',
+                'Failed to open webhook file'
+            );
         }
     }
 }
@@ -561,8 +627,8 @@ function countUnreadRelayEvents($projectKey)
     foreach ($relayDirs as $relayDir) {
         $files = glob($relayDir . '/*.json');
         foreach ($files as $file) {
-            $data = json_decode(file_get_contents($file), true);
-            if ($data && !($data['read'] ?? false)) {
+            $data = readJsonFile($file, true);
+            if (!empty($data) && !($data['read'] ?? false)) {
                 $count++;
             }
         }
@@ -588,8 +654,8 @@ function countUnreadRelayEventsByRelay($relayId, $projectKey = null)
     if (file_exists($relayDir)) {
         $files = glob($relayDir . '/*.json');
         foreach ($files as $file) {
-            $data = json_decode(file_get_contents($file), true);
-            if ($data && !($data['read'] ?? false)) {
+            $data = readJsonFile($file, true);
+            if (!empty($data) && !($data['read'] ?? false)) {
                 $count++;
             }
         }
@@ -613,8 +679,8 @@ function getAllRelayUnreadCounts($projectKey)
 
         $files = glob($relayDir . '/*.json');
         foreach ($files as $file) {
-            $data = json_decode(file_get_contents($file), true);
-            if ($data && !($data['read'] ?? false)) {
+            $data = readJsonFile($file, true);
+            if (!empty($data) && !($data['read'] ?? false)) {
                 $counts[$relayId]++;
             }
         }
@@ -634,22 +700,16 @@ function markRelayEventsAsRead($projectKey)
     foreach ($relayDirs as $relayDir) {
         $files = glob($relayDir . '/*.json');
         foreach ($files as $file) {
-            $data = json_decode(file_get_contents($file), true);
-            if ($data && !($data['read'] ?? false)) {
+            $data = readJsonFile($file, true);
+            if (!empty($data) && !($data['read'] ?? false)) {
                 $data['read'] = true;
-                $json = json_encode($data, JSON_PRETTY_PRINT);
-
-                // Use file locking
-                $fp = @fopen($file, 'c');
-                if ($fp && flock($fp, LOCK_EX)) {
-                    ftruncate($fp, 0);
-                    fwrite($fp, $json);
-                    fflush($fp);
-                    flock($fp, LOCK_UN);
-                    fclose($fp);
-                } elseif ($fp) {
-                    fclose($fp);
-                }
+                writeJsonFileWithLock(
+                    $file,
+                    $data,
+                    JSON_PRETTY_PRINT,
+                    'Failed to encode relay read state to JSON',
+                    'Failed to open relay event file'
+                );
             }
         }
     }
@@ -667,22 +727,17 @@ function markRelayEventAsRead($relayId, $filename, $projectKey)
         return false;
     }
 
-    $data = json_decode(file_get_contents($filePath), true);
-    if ($data) {
+    $data = readJsonFile($filePath, true);
+    if (!empty($data)) {
         $data['read'] = true;
-        $json = json_encode($data, JSON_PRETTY_PRINT);
-
-        // Use file locking
-        $fp = @fopen($filePath, 'c');
-        if ($fp && flock($fp, LOCK_EX)) {
-            ftruncate($fp, 0);
-            fwrite($fp, $json);
-            fflush($fp);
-            flock($fp, LOCK_UN);
-            fclose($fp);
+        if (writeJsonFileWithLock(
+            $filePath,
+            $data,
+            JSON_PRETTY_PRINT,
+            'Failed to encode relay event read state to JSON',
+            'Failed to open relay event file'
+        )) {
             return true;
-        } elseif ($fp) {
-            fclose($fp);
         }
     }
 
@@ -701,22 +756,17 @@ function markWebhookAsRead($webhookFile, $projectKey)
         return false;
     }
 
-    $data = json_decode(file_get_contents($filePath), true);
-    if ($data) {
+    $data = readJsonFile($filePath, true);
+    if (!empty($data)) {
         $data['read'] = true;
-        $json = json_encode($data, JSON_PRETTY_PRINT);
-
-        // Use file locking to prevent race conditions
-        $fp = @fopen($filePath, 'c');
-        if ($fp && flock($fp, LOCK_EX)) {
-            ftruncate($fp, 0);
-            fwrite($fp, $json);
-            fflush($fp);
-            flock($fp, LOCK_UN);
-            fclose($fp);
+        if (writeJsonFileWithLock(
+            $filePath,
+            $data,
+            JSON_PRETTY_PRINT,
+            'Failed to encode webhook read state to JSON',
+            'Failed to open webhook file'
+        )) {
             return true;
-        } elseif ($fp) {
-            fclose($fp);
         }
     }
 
@@ -1060,9 +1110,7 @@ if (isset($_POST['poll_webhook_relay'])) {
     // Create relay history directory if it doesn't exist
     $dirs = getProjectDirs($settings['currentProject']);
     $relayHistoryDir = $dirs['relays'] . '/' . $relayId;
-    if (!file_exists($relayHistoryDir)) {
-        mkdir($relayHistoryDir, 0755, true);
-    }
+    ensureDirectory($relayHistoryDir);
 
     foreach ($webhookCalls as $webhookCall) {
         // Skip if already relayed
@@ -1116,28 +1164,9 @@ if (isset($_POST['poll_webhook_relay'])) {
         }
 
         // Save history entry to file
-        $timestamp = microtime(true);
-        $filename = $relayHistoryDir . '/' . $timestamp . '_' . uniqid() . '.json';
-        $json = json_encode($historyEntry, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
-
-        // Debug: Check if JSON encoding succeeded
-        if ($json === false) {
-            error_log("Failed to encode relay history entry to JSON: " . json_last_error_msg());
-            $json = json_encode(['error' => 'JSON encoding failed', 'json_error' => json_last_error_msg()]);
-        }
-
-        // Use file_put_contents which is simpler and atomic
-        $bytesWritten = @file_put_contents($filename, $json, LOCK_EX);
-        if ($bytesWritten === false || $bytesWritten === 0) {
-            error_log("Failed to write relay history file: $filename (bytes written: " . var_export($bytesWritten, true) . ")");
-        } else {
-            // Verify the file was actually written
-            $actualSize = @filesize($filename);
-            if ($actualSize === 0 || $actualSize === false) {
-                error_log("CRITICAL: Relay file was written but is empty/missing! File: $filename, bytesWritten: $bytesWritten, actualSize: " . var_export($actualSize, true));
-                // Try to rewrite
-                @file_put_contents($filename, $json);
-            }
+        $saveResult = saveRelayHistoryEntry($relayHistoryDir, $historyEntry);
+        if (!$saveResult['success']) {
+            error_log("Failed to write relay history file: {$saveResult['filename']}");
         }
     }
 
@@ -1187,26 +1216,44 @@ if (isset($_POST['toggle_webhook_relay'])) {
     exit;
 }
 
-// Handle toggle per-relay polling
+// Handle toggle per-relay polling / global relay polling settings
 if (isset($_POST['toggle_relay_polling'])) {
     $relayId = $_POST['relay_id'] ?? '';
-    $pollingEnabled = isset($_POST['polling_enabled']) && $_POST['polling_enabled'] === 'true';
 
-    $relays = $settings['projects'][$settings['currentProject']]['webhookRelays'] ?? [];
+    if (!empty($relayId)) {
+        $pollingEnabled = isset($_POST['polling_enabled']) && $_POST['polling_enabled'] === 'true';
+        $relays = $settings['projects'][$settings['currentProject']]['webhookRelays'] ?? [];
 
-    foreach ($relays as $idx => $relay) {
-        if ($relay['id'] === $relayId) {
-            $settings['projects'][$settings['currentProject']]['webhookRelays'][$idx]['polling_enabled'] = $pollingEnabled;
-            saveSettings($settings);
+        foreach ($relays as $idx => $relay) {
+            if ($relay['id'] === $relayId) {
+                $settings['projects'][$settings['currentProject']]['webhookRelays'][$idx]['polling_enabled'] = $pollingEnabled;
+                saveSettings($settings);
 
-            header('Content-Type: application/json');
-            echo json_encode(['success' => true]);
-            exit;
+                header('Content-Type: application/json');
+                echo json_encode(['success' => true]);
+                exit;
+            }
         }
+
+        header('Content-Type: application/json');
+        echo json_encode(['success' => false, 'error' => 'Relay not found']);
+        exit;
     }
 
+    $enabled = isset($_POST['enabled']) && $_POST['enabled'] === 'true';
+
+    if (!isset($settings['projects'][$settings['currentProject']]['webhookRelaySettings'])) {
+        $settings['projects'][$settings['currentProject']]['webhookRelaySettings'] = [
+            'polling_enabled' => true,
+            'polling_interval' => 30000  // 30 seconds for API rate limiting
+        ];
+    }
+
+    $settings['projects'][$settings['currentProject']]['webhookRelaySettings']['polling_enabled'] = $enabled;
+    saveSettings($settings);
+
     header('Content-Type: application/json');
-    echo json_encode(['success' => false, 'error' => 'Relay not found']);
+    echo json_encode(['success' => true]);
     exit;
 }
 
@@ -1328,17 +1375,9 @@ if (isset($_POST['relay_again'])) {
     // Save relay history to storage with proper locking
     $dirs = getProjectDirs($settings['currentProject']);
     $relayHistoryDir = $dirs['relays'] . '/' . $relayId;
-    if (!file_exists($relayHistoryDir)) {
-        mkdir($relayHistoryDir, 0755, true);
-    }
-    $timestamp = microtime(true);
-    $filename = $relayHistoryDir . '/' . $timestamp . '_' . uniqid() . '.json';
-    $json = json_encode($historyEntry, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
-
-    // Use file_put_contents which is simpler and atomic
-    $bytesWritten = @file_put_contents($filename, $json, LOCK_EX);
-    if ($bytesWritten === false) {
-        error_log("Failed to write relay again history file: $filename");
+    $saveResult = saveRelayHistoryEntry($relayHistoryDir, $historyEntry);
+    if (!$saveResult['success']) {
+        error_log("Failed to write relay again history file: {$saveResult['filename']}");
     }
 
     // Clean up old files (keep only last 50)
@@ -1361,24 +1400,6 @@ if (isset($_POST['relay_again'])) {
     exit;
 }
 
-// Handle toggle polling
-if (isset($_POST['toggle_relay_polling'])) {
-    $enabled = isset($_POST['enabled']) && $_POST['enabled'] === 'true';
-
-    if (!isset($settings['projects'][$settings['currentProject']]['webhookRelaySettings'])) {
-        $settings['projects'][$settings['currentProject']]['webhookRelaySettings'] = [
-            'polling_enabled' => true,
-            'polling_interval' => 30000  // 30 seconds for API rate limiting
-        ];
-    }
-
-    $settings['projects'][$settings['currentProject']]['webhookRelaySettings']['polling_enabled'] = $enabled;
-    saveSettings($settings);
-
-    header('Content-Type: application/json');
-    echo json_encode(['success' => true]);
-    exit;
-}
 
 // Handle webhook capture
 if ($action === 'webhook') {
