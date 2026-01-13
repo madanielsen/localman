@@ -5411,7 +5411,9 @@ $webhook_history = loadHistory('webhook', $settings['currentProject']);
                         const checkbox = document.getElementById('captureOnlyCheckbox');
                         const urlInput = document.getElementById('relayToUrl');
                         const helpText = document.getElementById('captureOnlyHelp');
-                        const urlLabel = urlInput.previousElementSibling;
+                        // Find the label by looking at the parent div's first label child
+                        const parentDiv = urlInput.parentElement;
+                        const urlLabel = parentDiv.querySelector('label');
                         
                         if (checkbox.checked) {
                             urlInput.disabled = true;
