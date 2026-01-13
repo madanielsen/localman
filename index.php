@@ -1011,16 +1011,23 @@ if (isset($_POST['save_webhook_config'])) {
 // Handle create webhook relay
 if (isset($_POST['create_webhook_relay'])) {
     $description = trim($_POST['relay_description'] ?? '');
+    $captureOnly = isset($_POST['capture_only']) && $_POST['capture_only'] === '1';
     $relayToUrl = trim($_POST['relay_to_url'] ?? '');
 
-    if (empty($description) || empty($relayToUrl)) {
+    if (empty($description)) {
         header('Content-Type: application/json');
-        echo json_encode(['success' => false, 'error' => 'Description and relay URL are required']);
+        echo json_encode(['success' => false, 'error' => 'Description is required']);
         exit;
     }
 
-    // Validate relay URL
-    if (!filter_var($relayToUrl, FILTER_VALIDATE_URL)) {
+    if (!$captureOnly && empty($relayToUrl)) {
+        header('Content-Type: application/json');
+        echo json_encode(['success' => false, 'error' => 'Relay URL is required when "Capture only" is not enabled']);
+        exit;
+    }
+
+    // Validate relay URL only if not capture-only mode
+    if (!$captureOnly && !filter_var($relayToUrl, FILTER_VALIDATE_URL)) {
         header('Content-Type: application/json');
         echo json_encode(['success' => false, 'error' => 'Invalid relay URL. Please enter a valid URL (e.g., http://localhost:8000/webhook)']);
         exit;
@@ -1034,7 +1041,8 @@ if (isset($_POST['create_webhook_relay'])) {
             'webhook_uuid' => $result['data']['webhook_uuid'],
             'webhook_url' => $result['data']['webhook_url'],
             'description' => $description,
-            'relay_to_url' => $relayToUrl,
+            'capture_only' => $captureOnly,
+            'relay_to_url' => $captureOnly ? '' : $relayToUrl,
             'created_at' => date('Y-m-d H:i:s'),
             'last_checked' => null,
             'last_relayed' => null,
@@ -1118,15 +1126,15 @@ if (isset($_POST['poll_webhook_relay'])) {
             continue;
         }
 
-        // Relay the webhook
-        $relayResult = relayWebhookCall($webhookCall, $relay['relay_to_url']);
+        // If capture_only mode, just save to history without relaying
+        $captureOnly = $relay['capture_only'] ?? false;
 
         // Save relay history
         $historyEntry = [
             'timestamp' => date('Y-m-d H:i:s'),
             'webhook_call_uuid' => $webhookCall['webhook_call_uuid'] ?? null,
-            'relay_to_url' => $relay['relay_to_url'],
-            'status' => $relayResult['success'] ? 'success' : 'failed',
+            'relay_to_url' => $captureOnly ? '' : $relay['relay_to_url'],
+            'status' => 'captured',  // Default status for capture-only
             'read' => false,  // Track read status for badge system
             'relay_id' => $relayId,  // Track which relay this belongs to
             'request' => [
@@ -1138,29 +1146,42 @@ if (isset($_POST['poll_webhook_relay'])) {
             ]
         ];
 
-        if ($relayResult['success']) {
-            // Mark as relayed
-            $markResult = markWebhookCallRelayed($relay['webhook_uuid'], $webhookCall['webhook_call_uuid']);
+        if (!$captureOnly) {
+            // Relay the webhook
+            $relayResult = relayWebhookCall($webhookCall, $relay['relay_to_url']);
 
-            if ($markResult['success']) {
-                $relayedCount++;
-                $settings['projects'][$settings['currentProject']]['webhookRelays'][$relayIndex]['relay_count']++;
-                $settings['projects'][$settings['currentProject']]['webhookRelays'][$relayIndex]['last_relayed'] = date('Y-m-d H:i:s');
-                $settings['projects'][$settings['currentProject']]['webhookRelays'][$relayIndex]['last_error'] = null;
+            if ($relayResult['success']) {
+                // Mark as relayed
+                $markResult = markWebhookCallRelayed($relay['webhook_uuid'], $webhookCall['webhook_call_uuid']);
+
+                if ($markResult['success']) {
+                    $relayedCount++;
+                    $settings['projects'][$settings['currentProject']]['webhookRelays'][$relayIndex]['relay_count']++;
+                    $settings['projects'][$settings['currentProject']]['webhookRelays'][$relayIndex]['last_relayed'] = date('Y-m-d H:i:s');
+                    $settings['projects'][$settings['currentProject']]['webhookRelays'][$relayIndex]['last_error'] = null;
+                }
+
+                $historyEntry['status'] = 'success';
+                $historyEntry['duration'] = $relayResult['duration'] ?? 0;
+                $historyEntry['response'] = [
+                    'body' => $relayResult['response'] ?? ''
+                ];
+            } else {
+                $settings['projects'][$settings['currentProject']]['webhookRelays'][$relayIndex]['error_count']++;
+                $settings['projects'][$settings['currentProject']]['webhookRelays'][$relayIndex]['last_error'] = $relayResult['error'];
+                $historyEntry['status'] = 'failed';
+                $historyEntry['error'] = $relayResult['error'];
+                $errors[] = [
+                    'webhook_call_uuid' => $webhookCall['webhook_call_uuid'],
+                    'error' => $relayResult['error']
+                ];
             }
-
-            $historyEntry['duration'] = $relayResult['duration'] ?? 0;
-            $historyEntry['response'] = [
-                'body' => $relayResult['response'] ?? ''
-            ];
         } else {
-            $settings['projects'][$settings['currentProject']]['webhookRelays'][$relayIndex]['error_count']++;
-            $settings['projects'][$settings['currentProject']]['webhookRelays'][$relayIndex]['last_error'] = $relayResult['error'];
-            $historyEntry['error'] = $relayResult['error'];
-            $errors[] = [
-                'webhook_call_uuid' => $webhookCall['webhook_call_uuid'],
-                'error' => $relayResult['error']
-            ];
+            // Capture-only mode: just mark as captured and continue
+            $relayedCount++;
+            
+            // Mark as relayed on the API side to prevent re-fetching
+            markWebhookCallRelayed($relay['webhook_uuid'], $webhookCall['webhook_call_uuid']);
         }
 
         // Save history entry to file
@@ -1282,11 +1303,17 @@ if (isset($_POST['delete_webhook_relay'])) {
 if (isset($_POST['update_webhook_relay'])) {
     $relayId = $_POST['relay_id'] ?? '';
     $description = trim($_POST['relay_description'] ?? '');
+    $captureOnly = isset($_POST['capture_only']);
     $relayToUrl = trim($_POST['relay_to_url'] ?? '');
     $enabled = isset($_POST['relay_enabled']);
 
-    if (empty($description) || empty($relayToUrl)) {
-        header('Location: ?action=relay&relay_id=' . urlencode($relayId) . '&error=missing_fields');
+    if (empty($description)) {
+        header('Location: ?action=relay&relay_id=' . urlencode($relayId) . '&error=missing_description');
+        exit;
+    }
+
+    if (!$captureOnly && empty($relayToUrl)) {
+        header('Location: ?action=relay&relay_id=' . urlencode($relayId) . '&error=missing_url');
         exit;
     }
 
@@ -1294,7 +1321,8 @@ if (isset($_POST['update_webhook_relay'])) {
     foreach ($relays as $idx => $relay) {
         if ($relay['id'] === $relayId) {
             $settings['projects'][$settings['currentProject']]['webhookRelays'][$idx]['description'] = $description;
-            $settings['projects'][$settings['currentProject']]['webhookRelays'][$idx]['relay_to_url'] = $relayToUrl;
+            $settings['projects'][$settings['currentProject']]['webhookRelays'][$idx]['capture_only'] = $captureOnly;
+            $settings['projects'][$settings['currentProject']]['webhookRelays'][$idx]['relay_to_url'] = $captureOnly ? '' : $relayToUrl;
             $settings['projects'][$settings['currentProject']]['webhookRelays'][$idx]['enabled'] = $enabled;
             saveSettings($settings);
 
@@ -3909,8 +3937,24 @@ $webhook_history = loadHistory('webhook', $settings['currentProject']);
                                                                 <span class="text-sm font-medium"
                                                                     style="color: var(--text-primary);"><?php echo htmlspecialchars($item['timestamp']); ?></span>
                                                                 <span
-                                                                    class="px-3 py-1 rounded text-xs font-bold <?php echo $item['status'] === 'success' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'; ?>">
-                                                                    <?php echo $item['status'] === 'success' ? 'SUCCESS' : 'FAILED'; ?>
+                                                                    class="px-3 py-1 rounded text-xs font-bold <?php 
+                                                                    if ($item['status'] === 'success') {
+                                                                        echo 'bg-green-100 text-green-700';
+                                                                    } elseif ($item['status'] === 'captured') {
+                                                                        echo 'bg-blue-100 text-blue-700';
+                                                                    } else {
+                                                                        echo 'bg-red-100 text-red-700';
+                                                                    }
+                                                                    ?>">
+                                                                    <?php 
+                                                                    if ($item['status'] === 'success') {
+                                                                        echo 'SUCCESS';
+                                                                    } elseif ($item['status'] === 'captured') {
+                                                                        echo 'CAPTURED';
+                                                                    } else {
+                                                                        echo 'FAILED';
+                                                                    }
+                                                                    ?>
                                                                 </span>
                                                             </div>
                                                             <div class="flex items-center gap-4">
@@ -4035,7 +4079,7 @@ $webhook_history = loadHistory('webhook', $settings['currentProject']);
 
                                     <!-- Relay Config Tab -->
                                     <div id="relay-config-tab" class="p-6 hidden">
-                                        <form method="POST" style="max-width: 800px;">
+                                        <form method="POST" style="max-width: 800px;" id="relayConfigForm">
                                             <input type="hidden" name="relay_id"
                                                 value="<?php echo htmlspecialchars($selectedRelay['id']); ?>">
 
@@ -4066,9 +4110,19 @@ $webhook_history = loadHistory('webhook', $settings['currentProject']);
                                             </div>
 
                                             <div class="mb-5">
+                                                <label class="flex items-center gap-2 cursor-pointer">
+                                                    <input type="checkbox" name="capture_only" id="configCaptureOnlyCheckbox"
+                                                        <?php echo (!empty($selectedRelay['capture_only'])) ? 'checked' : ''; ?>
+                                                        onchange="toggleConfigCaptureOnly()"
+                                                        class="w-4 h-4 accent-orange-500">
+                                                    <span class="text-sm" style="color: var(--text-primary);">Capture only</span>
+                                                </label>
+                                            </div>
+
+                                            <div class="mb-5" id="configRelayUrlField">
                                                 <label class="block text-xs font-semibold mb-2"
                                                     style="color: var(--text-primary);">Relay To URL</label>
-                                                <input type="text" name="relay_to_url"
+                                                <input type="text" name="relay_to_url" id="configRelayToUrl"
                                                     value="<?php echo htmlspecialchars($selectedRelay['relay_to_url']); ?>"
                                                     class="w-full px-3 py-2 border rounded text-sm font-mono"
                                                     style="background: var(--input-bg); border-color: var(--border-primary); color: var(--text-primary);">
@@ -4124,6 +4178,13 @@ $webhook_history = loadHistory('webhook', $settings['currentProject']);
                                                             style="background: var(--input-bg); border: 1px solid var(--border-primary); color: var(--text-primary);">
                                                     </div>
                                                     <div>
+                                                        <label class="flex items-center gap-2 cursor-pointer mb-1.5">
+                                                            <input type="checkbox" id="captureOnlyCheckbox" onchange="toggleCaptureOnly()"
+                                                                class="w-4 h-4 accent-orange-500">
+                                                            <span class="text-xs font-medium" style="color: var(--text-secondary);">Capture only</span>
+                                                        </label>
+                                                    </div>
+                                                    <div id="relayUrlField">
                                                         <label class="block text-xs font-medium mb-1.5"
                                                             style="color: var(--text-secondary);">Relay To URL *</label>
                                                         <input type="text" id="relayToUrl"
@@ -5338,8 +5399,54 @@ $webhook_history = loadHistory('webhook', $settings['currentProject']);
                     // Initialize local times on page load
                     updateLocalTimes();
 
+                    function toggleCaptureOnly() {
+                        const captureOnlyCheckbox = document.getElementById('captureOnlyCheckbox');
+                        const relayUrlField = document.getElementById('relayUrlField');
+                        const relayToUrlInput = document.getElementById('relayToUrl');
+
+                        if (captureOnlyCheckbox.checked) {
+                            relayToUrlInput.value = '';
+                            relayToUrlInput.placeholder = 'When "Capture only" is enabled, webhooks will not be relayed to a URL.';
+                            relayToUrlInput.disabled = true;
+                            relayToUrlInput.style.opacity = '0.5';
+                            relayToUrlInput.style.cursor = 'not-allowed';
+                        } else {
+                            relayToUrlInput.placeholder = 'http://localhost:8000/webhook';
+                            relayToUrlInput.disabled = false;
+                            relayToUrlInput.style.opacity = '1';
+                            relayToUrlInput.style.cursor = 'text';
+                        }
+                    }
+
+                    function toggleConfigCaptureOnly() {
+                        const captureOnlyCheckbox = document.getElementById('configCaptureOnlyCheckbox');
+                        const relayToUrlInput = document.getElementById('configRelayToUrl');
+
+                        if (captureOnlyCheckbox.checked) {
+                            relayToUrlInput.value = '';
+                            relayToUrlInput.placeholder = 'When "Capture only" is enabled, webhooks will not be relayed to a URL.';
+                            relayToUrlInput.disabled = true;
+                            relayToUrlInput.style.opacity = '0.5';
+                            relayToUrlInput.style.cursor = 'not-allowed';
+                        } else {
+                            relayToUrlInput.placeholder = 'http://localhost:8000/webhook';
+                            relayToUrlInput.disabled = false;
+                            relayToUrlInput.style.opacity = '1';
+                            relayToUrlInput.style.cursor = 'text';
+                        }
+                    }
+
+                    // Initialize capture only state on page load
+                    document.addEventListener('DOMContentLoaded', function() {
+                        const configCheckbox = document.getElementById('configCaptureOnlyCheckbox');
+                        if (configCheckbox && configCheckbox.checked) {
+                            toggleConfigCaptureOnly();
+                        }
+                    });
+
                     function createRelay() {
                         const description = document.getElementById('relayDescription').value.trim();
+                        const captureOnly = document.getElementById('captureOnlyCheckbox').checked;
                         const relayToUrl = document.getElementById('relayToUrl').value.trim();
                         const errorDiv = document.getElementById('createRelayError');
                         const successDiv = document.getElementById('createRelaySuccess');
@@ -5347,8 +5454,14 @@ $webhook_history = loadHistory('webhook', $settings['currentProject']);
                         errorDiv.classList.add('hidden');
                         successDiv.classList.add('hidden');
 
-                        if (!description || !relayToUrl) {
-                            errorDiv.textContent = 'Description and Relay URL are required';
+                        if (!description) {
+                            errorDiv.textContent = 'Description is required';
+                            errorDiv.classList.remove('hidden');
+                            return;
+                        }
+
+                        if (!captureOnly && !relayToUrl) {
+                            errorDiv.textContent = 'Relay URL is required when "Capture only" is not enabled';
                             errorDiv.classList.remove('hidden');
                             return;
                         }
@@ -5356,7 +5469,10 @@ $webhook_history = loadHistory('webhook', $settings['currentProject']);
                         const formData = new FormData();
                         formData.append('create_webhook_relay', '1');
                         formData.append('relay_description', description);
-                        formData.append('relay_to_url', relayToUrl);
+                        formData.append('capture_only', captureOnly ? '1' : '0');
+                        if (!captureOnly) {
+                            formData.append('relay_to_url', relayToUrl);
+                        }
 
                         fetch('', {
                             method: 'POST',
