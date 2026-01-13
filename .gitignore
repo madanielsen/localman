@@ -1,1 +1,5 @@
 storage/
+test-screenshots/
+test_results_*.json
+test_echo_server.php
+*.backup
