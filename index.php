@@ -1267,7 +1267,7 @@ if (isset($_POST['update_webhook_relay'])) {
     $relayToUrl = trim($_POST['relay_to_url'] ?? '');
     $enabled = isset($_POST['relay_enabled']);
 
-    if (empty($description) || empty($relayToUrl)) {
+    if (empty($description)) {
         header('Location: ?action=relay&relay_id=' . urlencode($relayId) . '&error=missing_fields');
         exit;
     }
@@ -1275,8 +1275,20 @@ if (isset($_POST['update_webhook_relay'])) {
     $relays = $settings['projects'][$settings['currentProject']]['webhookRelays'] ?? [];
     foreach ($relays as $idx => $relay) {
         if ($relay['id'] === $relayId) {
+            // Check if this is a capture-only relay
+            $captureOnly = !empty($relay['capture_only']);
+            
+            // Only validate URL if not capture-only mode
+            if (!$captureOnly && empty($relayToUrl)) {
+                header('Location: ?action=relay&relay_id=' . urlencode($relayId) . '&error=missing_fields');
+                exit;
+            }
+            
             $settings['projects'][$settings['currentProject']]['webhookRelays'][$idx]['description'] = $description;
-            $settings['projects'][$settings['currentProject']]['webhookRelays'][$idx]['relay_to_url'] = $relayToUrl;
+            // Don't update relay_to_url for capture-only relays
+            if (!$captureOnly) {
+                $settings['projects'][$settings['currentProject']]['webhookRelays'][$idx]['relay_to_url'] = $relayToUrl;
+            }
             $settings['projects'][$settings['currentProject']]['webhookRelays'][$idx]['enabled'] = $enabled;
             saveSettings($settings);
 
