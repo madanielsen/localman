@@ -5477,9 +5477,7 @@ $webhook_history = loadHistory('webhook', $settings['currentProject']);
                         formData.append('create_webhook_relay', '1');
                         formData.append('relay_description', description);
                         formData.append('capture_only', captureOnly ? '1' : '0');
-                        if (!captureOnly) {
-                            formData.append('relay_to_url', relayToUrl);
-                        }
+                        formData.append('relay_to_url', captureOnly ? '' : relayToUrl);
 
                         fetch('', {
                             method: 'POST',
