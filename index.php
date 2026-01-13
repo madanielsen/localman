@@ -1304,7 +1304,7 @@ if (isset($_POST['delete_webhook_relay'])) {
 if (isset($_POST['update_webhook_relay'])) {
     $relayId = $_POST['relay_id'] ?? '';
     $description = trim($_POST['relay_description'] ?? '');
-    $captureOnly = isset($_POST['capture_only']);
+    $captureOnly = isset($_POST['capture_only']) && $_POST['capture_only'] === 'on';
     $relayToUrl = trim($_POST['relay_to_url'] ?? '');
     $enabled = isset($_POST['relay_enabled']);
 
@@ -1315,6 +1315,12 @@ if (isset($_POST['update_webhook_relay'])) {
 
     if (!$captureOnly && empty($relayToUrl)) {
         header('Location: ?action=relay&relay_id=' . urlencode($relayId) . '&error=missing_url');
+        exit;
+    }
+
+    // Validate relay URL only if not capture-only mode
+    if (!$captureOnly && !filter_var($relayToUrl, FILTER_VALIDATE_URL)) {
+        header('Location: ?action=relay&relay_id=' . urlencode($relayId) . '&error=invalid_url');
         exit;
     }
 
